@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 import aiohttp
-import json
 import os
 from dotenv import load_dotenv
 
@@ -17,21 +16,20 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-# Lưu trạng thái fake của các user
+# Lưu trạng thái fake
 fake_status = {}
 
 @bot.event
 async def on_ready():
-    print(f'Bot đã sẵn sàng! Logged in as {bot.user}')
+    print(f'✅ Bot đã sẵn sàng! Logged in as {bot.user}')
     try:
         synced = await bot.tree.sync()
-        print(f"Đã sync {len(synced)} lệnh slash")
+        print(f"✅ Đã sync {len(synced)} lệnh slash")
     except Exception as e:
-        print(e)
+        print(f"❌ Lỗi sync lệnh: {e}")
 
 @bot.tree.command(name="fake", description="Fake theo user khác (Chỉ admin)")
 async def fake(interaction: discord.Interaction, user_id: str):
-    # Kiểm tra admin
     if interaction.user.id != ADMIN_ID:
         await interaction.response.send_message("❌ Bạn không có quyền sử dụng lệnh này!", ephemeral=True)
         return
@@ -42,13 +40,11 @@ async def fake(interaction: discord.Interaction, user_id: str):
         await interaction.response.send_message("❌ ID user không hợp lệ!", ephemeral=True)
         return
 
-    # Tìm user trong server
     target_user = interaction.guild.get_member(user_id_int)
     if not target_user:
         await interaction.response.send_message("❌ Không tìm thấy user trong server!", ephemeral=True)
         return
 
-    # Lấy thông tin user
     try:
         avatar_url = target_user.display_avatar.url
         username = target_user.name
@@ -57,7 +53,6 @@ async def fake(interaction: discord.Interaction, user_id: str):
         await interaction.response.send_message("❌ Không thể lấy thông tin user!", ephemeral=True)
         return
 
-    # Lưu trạng thái fake
     fake_status[interaction.guild.id] = {
         'user_id': user_id_int,
         'username': username,
@@ -68,10 +63,13 @@ async def fake(interaction: discord.Interaction, user_id: str):
 
     embed = discord.Embed(
         title="✅ Đã bật chế độ fake!",
-        description=f"Đang fake theo: {display_name} ({username})",
+        description=f"Đang fake theo: **{display_name}** ({username})",
         color=discord.Color.green()
     )
     embed.set_thumbnail(url=avatar_url)
+    embed.add_field(name="User ID", value=f"`{user_id_int}`", inline=False)
+    embed.add_field(name="Hướng dẫn", value="Bot sẽ tự động fake tất cả tin nhắn mới của user này", inline=False)
+    
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="stop_fake", description="Dừng fake (Chỉ admin)")
@@ -86,76 +84,113 @@ async def stop_fake(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Chưa có chế độ fake nào được kích hoạt!", ephemeral=True)
 
+async def get_or_create_webhook(channel):
+    """Lấy webhook có sẵn hoặc tạo mới"""
+    webhooks = await channel.webhooks()
+    
+    for wh in webhooks:
+        if wh.name == "FakeBotWebhook":
+            return wh
+    
+    # Tạo webhook mới
+    webhook = await channel.create_webhook(name="FakeBotWebhook")
+    return webhook
+
 @bot.event
 async def on_message(message):
-    # Bỏ qua tin nhắn của bot
     if message.author.bot:
         return
 
-    # Bỏ qua tin nhắn trong DM
     if not message.guild:
         return
 
-    # Kiểm tra fake status
     if message.guild.id not in fake_status:
+        await bot.process_commands(message)
         return
 
     status = fake_status[message.guild.id]
     if not status['active']:
+        await bot.process_commands(message)
         return
 
-    # Nếu tin nhắn từ target user
     if message.author.id == status['user_id']:
-        # Lấy channel để fake
-        channel = message.channel
-        
-        # Tạo webhook hoặc gửi tin nhắn
         try:
-            # Lấy webhook có sẵn hoặc tạo mới
-            webhooks = await channel.webhooks()
-            webhook = None
+            channel = message.channel
             
-            for wh in webhooks:
-                if wh.name == "FakeBotWebhook":
-                    webhook = wh
-                    break
+            # Lấy webhook
+            webhook = await get_or_create_webhook(channel)
             
-            if not webhook:
-                webhook = await channel.create_webhook(name="FakeBotWebhook")
+            # Chuẩn bị nội dung
+            content = message.content if message.content else None
             
-            # Nội dung tin nhắn
-            content = message.content
+            # Xử lý attachments
             files = []
-            
-            # Xử lý attachments (ảnh, file)
             if message.attachments:
                 for attachment in message.attachments:
-                    # Tải file
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(attachment.url) as resp:
-                            if resp.status == 200:
-                                file_data = await resp.read()
-                                files.append((attachment.filename, file_data))
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(attachment.url) as resp:
+                                if resp.status == 200:
+                                    file_data = await resp.read()
+                                    files.append(discord.File(fp=file_data, filename=attachment.filename))
+                    except Exception as e:
+                        print(f"Lỗi tải attachment: {e}")
+            
+            # Xử lý embed nếu có
+            embeds = []
+            if message.embeds:
+                embeds = message.embeds
             
             # Gửi tin nhắn fake
             await webhook.send(
-                content=content if content else None,
+                content=content,
                 username=status['display_name'],
                 avatar_url=status['avatar_url'],
-                files=[discord.File(fp=file_data, filename=filename) for filename, file_data in files] if files else None
+                files=files if files else None,
+                embeds=embeds if embeds else None
             )
             
+        except discord.Forbidden:
+            await channel.send("⚠️ Bot không có quyền tạo webhook hoặc gửi tin nhắn!")
         except Exception as e:
             print(f"Lỗi khi gửi tin nhắn fake: {e}")
-            await channel.send(f"⚠️ Lỗi fake message: {str(e)[:100]}")
+            try:
+                await channel.send(f"⚠️ Lỗi fake message: {str(e)[:100]}")
+            except:
+                pass
 
-    # Xử lý lệnh prefix nếu có
     await bot.process_commands(message)
 
-# Lệnh test
-@bot.tree.command(name="test", description="Test bot")
+@bot.tree.command(name="test", description="Kiểm tra bot hoạt động")
 async def test(interaction: discord.Interaction):
-    await interaction.response.send_message("Bot đang hoạt động!", ephemeral=True)
+    embed = discord.Embed(
+        title="✅ Bot đang hoạt động!",
+        description="Bot đã sẵn sàng để sử dụng",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Admin ID", value=f"`{ADMIN_ID}`", inline=False)
+    embed.add_field(name="Hướng dẫn", value="Dùng `/fake <user_id>` để bắt đầu fake", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="status", description="Kiểm tra trạng thái fake")
+async def status(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_ID:
+        await interaction.response.send_message("❌ Bạn không có quyền sử dụng lệnh này!", ephemeral=True)
+        return
+
+    if interaction.guild.id in fake_status:
+        status_data = fake_status[interaction.guild.id]
+        embed = discord.Embed(
+            title="📊 Trạng thái fake",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="User", value=status_data['display_name'], inline=True)
+        embed.add_field(name="User ID", value=f"`{status_data['user_id']}`", inline=True)
+        embed.add_field(name="Trạng thái", value="✅ Đang hoạt động" if status_data['active'] else "❌ Đã dừng", inline=True)
+        embed.set_thumbnail(url=status_data['avatar_url'])
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Chưa có chế độ fake nào được kích hoạt!", ephemeral=True)
 
 if __name__ == "__main__":
     if not TOKEN:
