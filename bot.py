@@ -1,191 +1,337 @@
 import sys
 import types
+import asyncio
+import aiohttp
+import os
+from dotenv import load_dotenv
 
 # Tạo mock audioop TRƯỚC KHI import discord
 class MockAudioop:
     def __getattr__(self, name):
         return lambda *args, **kwargs: b''
 
-# Thêm audioop vào sys.modules để discord.py nghĩ nó đã tồn tại
 sys.modules['audioop'] = MockAudioop()
 
-# Bây giờ mới import discord
 import discord
 from discord.ext import commands
-import aiohttp
-import os
-from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = os.getenv('DISCORD_TOKEN')
+# Lấy token từ env
+TOKENS = [
+    os.getenv('DISCORD_TOKEN_1'),
+    os.getenv('DISCORD_TOKEN_2'),
+    os.getenv('DISCORD_TOKEN_3')
+]
+
 ADMIN_ID = 1512658477841908015
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.guilds = True
+# Lưu trạng thái fake cho từng token
+bot_instances = []
 
-bot = commands.Bot(command_prefix='/', intents=intents)
+class FakeBot:
+    def __init__(self, token, bot_id):
+        self.token = token
+        self.bot_id = bot_id
+        self.bot = None
+        self.fake_status = {
+            'user_id': None,
+            'display_name': None,
+            'avatar_url': None,
+            'active': False
+        }
+        # Lưu tin nhắn đã fake để edit
+        self.fake_messages = {}  # {message_id: fake_message_id}
+        self.setup_bot()
 
-# Lưu trạng thái fake
-fake_status = {}
+    def setup_bot(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
 
-@bot.event
-async def on_ready():
-    print(f'✅ Bot đã sẵn sàng! Logged in as {bot.user}')
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Đã sync {len(synced)} lệnh slash")
-    except Exception as e:
-        print(f"❌ Lỗi sync lệnh: {e}")
+        self.bot = commands.Bot(command_prefix='/', intents=intents)
 
-@bot.tree.command(name="fake", description="Fake theo user khác (Chỉ admin)")
-async def fake(interaction: discord.Interaction, user_id: str):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ Bạn không có quyền sử dụng lệnh này!", ephemeral=True)
-        return
+        @self.bot.event
+        async def on_ready():
+            print(f'✅ Bot {self.bot_id} đã sẵn sàng! Logged in as {self.bot.user} (ID: {self.bot.user.id})')
+            try:
+                synced = await self.bot.tree.sync()
+                print(f"✅ Bot {self.bot_id} đã sync {len(synced)} lệnh slash")
+            except Exception as e:
+                print(f"❌ Bot {self.bot_id} lỗi sync: {e}")
 
-    try:
-        user_id_int = int(user_id)
-    except ValueError:
-        await interaction.response.send_message("❌ ID user không hợp lệ!", ephemeral=True)
-        return
+        @self.bot.tree.command(name=f"fake{self.bot_id}", description=f"Fake user với bot {self.bot_id} (Chỉ admin)")
+        async def fake(interaction: discord.Interaction, user_id: str):
+            if interaction.user.id != ADMIN_ID:
+                await interaction.response.send_message("❌ Bạn không có quyền!", ephemeral=True)
+                return
 
-    target_user = interaction.guild.get_member(user_id_int)
-    if not target_user:
-        await interaction.response.send_message("❌ Không tìm thấy user trong server!", ephemeral=True)
-        return
+            try:
+                user_id_int = int(user_id)
+            except ValueError:
+                await interaction.response.send_message("❌ ID không hợp lệ!", ephemeral=True)
+                return
 
-    try:
-        avatar_url = target_user.display_avatar.url
-        username = target_user.name
-        display_name = target_user.display_name
-    except:
-        await interaction.response.send_message("❌ Không thể lấy thông tin user!", ephemeral=True)
-        return
+            target_user = interaction.guild.get_member(user_id_int)
+            if not target_user:
+                await interaction.response.send_message("❌ Không tìm thấy user!", ephemeral=True)
+                return
 
-    fake_status[interaction.guild.id] = {
-        'user_id': user_id_int,
-        'username': username,
-        'display_name': display_name,
-        'avatar_url': avatar_url,
-        'active': True
-    }
+            try:
+                avatar_url = target_user.display_avatar.url
+                display_name = target_user.display_name
+                
+                # Tải avatar
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(avatar_url) as resp:
+                        if resp.status == 200:
+                            avatar_data = await resp.read()
+                        else:
+                            await interaction.response.send_message("❌ Không thể tải avatar!", ephemeral=True)
+                            return
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Lỗi: {str(e)[:100]}", ephemeral=True)
+                return
 
-    embed = discord.Embed(
-        title="✅ Đã bật chế độ fake!",
-        description=f"Đang fake theo: **{display_name}** ({username})",
-        color=discord.Color.green()
-    )
-    embed.set_thumbnail(url=avatar_url)
-    embed.add_field(name="User ID", value=f"`{user_id_int}`", inline=False)
-    embed.add_field(name="Hướng dẫn", value="Bot sẽ tự động fake tất cả tin nhắn mới của user này", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Lưu thông tin
+            self.fake_status = {
+                'user_id': user_id_int,
+                'display_name': display_name,
+                'avatar_url': avatar_url,
+                'active': True
+            }
 
-@bot.tree.command(name="stop_fake", description="Dừng fake (Chỉ admin)")
-async def stop_fake(interaction: discord.Interaction):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ Bạn không có quyền sử dụng lệnh này!", ephemeral=True)
-        return
+            # Đổi tên và avatar
+            try:
+                await self.bot.user.edit(username=display_name[:32])
+                await self.bot.user.edit(avatar=avatar_data)
+                
+                embed = discord.Embed(
+                    title=f"✅ Bot {self.bot_id} đã fake!",
+                    description=f"Đang fake: **{display_name}**",
+                    color=discord.Color.green()
+                )
+                embed.set_thumbnail(url=avatar_url)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Lỗi đổi tên: {str(e)[:100]}", ephemeral=True)
 
-    if interaction.guild.id in fake_status:
-        fake_status[interaction.guild.id]['active'] = False
-        await interaction.response.send_message("✅ Đã tắt chế độ fake!", ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ Chưa có chế độ fake nào được kích hoạt!", ephemeral=True)
+        @self.bot.tree.command(name=f"stop_fake{self.bot_id}", description=f"Dừng fake bot {self.bot_id}")
+        async def stop_fake(interaction: discord.Interaction):
+            if interaction.user.id != ADMIN_ID:
+                await interaction.response.send_message("❌ Không có quyền!", ephemeral=True)
+                return
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
+            self.fake_status['active'] = False
+            self.fake_messages.clear()
+            await interaction.response.send_message(f"✅ Bot {self.bot_id} đã dừng fake!", ephemeral=True)
 
-    if not message.guild:
-        return
+        @self.bot.tree.command(name=f"reset{self.bot_id}", description=f"Reset bot {self.bot_id} về mặc định")
+        async def reset(interaction: discord.Interaction):
+            if interaction.user.id != ADMIN_ID:
+                await interaction.response.send_message("❌ Không có quyền!", ephemeral=True)
+                return
 
-    if message.guild.id not in fake_status:
-        await bot.process_commands(message)
-        return
+            try:
+                await self.bot.user.edit(username=f"Fake Bot {self.bot_id}")
+                await self.bot.user.edit(avatar=None)
+                self.fake_status['active'] = False
+                self.fake_messages.clear()
+                await interaction.response.send_message(f"✅ Bot {self.bot_id} đã reset!", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Lỗi reset: {str(e)[:100]}", ephemeral=True)
 
-    status = fake_status[message.guild.id]
-    if not status['active']:
-        await bot.process_commands(message)
-        return
+        @self.bot.tree.command(name=f"status{self.bot_id}", description=f"Trạng thái bot {self.bot_id}")
+        async def status_cmd(interaction: discord.Interaction):
+            if interaction.user.id != ADMIN_ID:
+                await interaction.response.send_message("❌ Không có quyền!", ephemeral=True)
+                return
 
-    # Nếu tin nhắn từ user đang bị fake
-    if message.author.id == status['user_id']:
-        try:
-            channel = message.channel
-            
-            # Lấy nội dung tin nhắn
-            content = message.content if message.content else ""
-            
-            # Xử lý attachments
-            files = []
-            if message.attachments:
-                for attachment in message.attachments:
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(attachment.url) as resp:
-                                if resp.status == 200:
-                                    file_data = await resp.read()
-                                    files.append(discord.File(fp=file_data, filename=attachment.filename))
-                    except Exception as e:
-                        print(f"Lỗi tải attachment: {e}")
-            
-            # Gửi tin nhắn text trực tiếp
-            if files:
-                # Nếu có file đính kèm
-                await channel.send(content=content, files=files)
+            if self.fake_status['active']:
+                embed = discord.Embed(
+                    title=f"📊 Bot {self.bot_id}",
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="User", value=self.fake_status['display_name'], inline=True)
+                embed.add_field(name="Status", value="✅ Đang fake", inline=True)
+                embed.add_field(name="Tin nhắn đã fake", value=len(self.fake_messages), inline=True)
+                embed.set_thumbnail(url=self.fake_status['avatar_url'])
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             else:
-                # Nếu chỉ có text
-                if content:
-                    await channel.send(content=content)
-                # Nếu tin nhắn chỉ có embed (ví dụ: link, video, v.v.)
-                elif message.embeds:
-                    # Gửi lại embed
-                    for embed in message.embeds:
-                        await channel.send(embed=embed)
-            
-        except Exception as e:
-            print(f"Lỗi khi gửi tin nhắn fake: {e}")
+                await interaction.response.send_message(f"❌ Bot {self.bot_id} đang ở chế độ mặc định!", ephemeral=True)
 
-    await bot.process_commands(message)
+        @self.bot.event
+        async def on_message(message):
+            if message.author.bot:
+                return
 
-@bot.tree.command(name="test", description="Kiểm tra bot hoạt động")
-async def test(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="✅ Bot đang hoạt động!",
-        description="Bot đã sẵn sàng để sử dụng",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Admin ID", value=f"`{ADMIN_ID}`", inline=False)
-    embed.add_field(name="Hướng dẫn", value="Dùng `/fake <user_id>` để bắt đầu fake", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+            if not message.guild:
+                return
 
-@bot.tree.command(name="status", description="Kiểm tra trạng thái fake")
-async def status(interaction: discord.Interaction):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ Bạn không có quyền sử dụng lệnh này!", ephemeral=True)
-        return
+            if not self.fake_status['active']:
+                await self.bot.process_commands(message)
+                return
 
-    if interaction.guild.id in fake_status:
-        status_data = fake_status[interaction.guild.id]
-        embed = discord.Embed(
-            title="📊 Trạng thái fake",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="User", value=status_data['display_name'], inline=True)
-        embed.add_field(name="User ID", value=f"`{status_data['user_id']}`", inline=True)
-        embed.add_field(name="Trạng thái", value="✅ Đang hoạt động" if status_data['active'] else "❌ Đã dừng", inline=True)
-        embed.set_thumbnail(url=status_data['avatar_url'])
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ Chưa có chế độ fake nào được kích hoạt!", ephemeral=True)
+            # Nếu tin nhắn từ user đang bị fake
+            if message.author.id == self.fake_status['user_id']:
+                try:
+                    channel = message.channel
+                    content = message.content if message.content else ""
+                    
+                    files = []
+                    if message.attachments:
+                        for attachment in message.attachments:
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.get(attachment.url) as resp:
+                                        if resp.status == 200:
+                                            file_data = await resp.read()
+                                            files.append(discord.File(fp=file_data, filename=attachment.filename))
+                            except Exception as e:
+                                print(f"Lỗi tải attachment bot {self.bot_id}: {e}")
+                    
+                    # Gửi tin nhắn và lưu ID
+                    if files:
+                        sent_msg = await channel.send(content=content, files=files)
+                    else:
+                        if content:
+                            sent_msg = await channel.send(content=content)
+                        elif message.embeds:
+                            for embed in message.embeds:
+                                sent_msg = await channel.send(embed=embed)
+                        else:
+                            sent_msg = None
+                    
+                    # Lưu ID tin nhắn gốc và tin nhắn đã fake
+                    if sent_msg:
+                        self.fake_messages[message.id] = sent_msg.id
+                            
+                except Exception as e:
+                    print(f"Lỗi gửi tin nhắn bot {self.bot_id}: {e}")
+
+            await self.bot.process_commands(message)
+
+        @self.bot.event
+        async def on_message_edit(before, after):
+            """Xử lý khi user sửa tin nhắn"""
+            if before.author.bot:
+                return
+
+            if not before.guild:
+                return
+
+            if not self.fake_status['active']:
+                return
+
+            # Nếu tin nhắn được sửa từ user đang bị fake
+            if before.author.id == self.fake_status['user_id']:
+                try:
+                    # Tìm tin nhắn đã fake tương ứng
+                    if before.id in self.fake_messages:
+                        fake_msg_id = self.fake_messages[before.id]
+                        channel = before.channel
+                        
+                        # Lấy tin nhắn đã fake
+                        try:
+                            fake_msg = await channel.fetch_message(fake_msg_id)
+                            
+                            # Cập nhật nội dung mới
+                            new_content = after.content if after.content else ""
+                            
+                            # Xử lý attachments mới
+                            files = []
+                            if after.attachments:
+                                for attachment in after.attachments:
+                                    try:
+                                        async with aiohttp.ClientSession() as session:
+                                            async with session.get(attachment.url) as resp:
+                                                if resp.status == 200:
+                                                    file_data = await resp.read()
+                                                    files.append(discord.File(fp=file_data, filename=attachment.filename))
+                                    except Exception as e:
+                                        print(f"Lỗi tải attachment bot {self.bot_id}: {e}")
+                            
+                            # Sửa tin nhắn đã fake
+                            if files:
+                                await fake_msg.edit(content=new_content, attachments=files)
+                            else:
+                                if new_content:
+                                    await fake_msg.edit(content=new_content)
+                                elif after.embeds:
+                                    await fake_msg.edit(embeds=after.embeds)
+                                else:
+                                    await fake_msg.edit(content="")
+                                    
+                            print(f"✅ Bot {self.bot_id} đã sửa tin nhắn fake (ID: {fake_msg_id})")
+                            
+                        except discord.NotFound:
+                            # Tin nhắn đã bị xóa, xóa khỏi cache
+                            del self.fake_messages[before.id]
+                        except Exception as e:
+                            print(f"Lỗi sửa tin nhắn bot {self.bot_id}: {e}")
+                            
+                except Exception as e:
+                    print(f"Lỗi xử lý sửa tin nhắn bot {self.bot_id}: {e}")
+
+        @self.bot.event
+        async def on_message_delete(message):
+            """Xử lý khi user xóa tin nhắn"""
+            if message.author.bot:
+                return
+
+            if not message.guild:
+                return
+
+            if not self.fake_status['active']:
+                return
+
+            # Nếu tin nhắn bị xóa từ user đang bị fake
+            if message.author.id == self.fake_status['user_id']:
+                try:
+                    # Tìm tin nhắn đã fake tương ứng
+                    if message.id in self.fake_messages:
+                        fake_msg_id = self.fake_messages[message.id]
+                        channel = message.channel
+                        
+                        # Xóa tin nhắn đã fake
+                        try:
+                            fake_msg = await channel.fetch_message(fake_msg_id)
+                            await fake_msg.delete()
+                            del self.fake_messages[message.id]
+                            print(f"✅ Bot {self.bot_id} đã xóa tin nhắn fake (ID: {fake_msg_id})")
+                        except discord.NotFound:
+                            del self.fake_messages[message.id]
+                        except Exception as e:
+                            print(f"Lỗi xóa tin nhắn bot {self.bot_id}: {e}")
+                            
+                except Exception as e:
+                    print(f"Lỗi xử lý xóa tin nhắn bot {self.bot_id}: {e}")
+
+    async def start(self):
+        await self.bot.start(self.token)
+
+async def main():
+    # Tạo và chạy các bot
+    tasks = []
+    for i, token in enumerate(TOKENS, 1):
+        if token:
+            bot_instance = FakeBot(token, i)
+            bot_instances.append(bot_instance)
+            tasks.append(bot_instance.start())
+            print(f"🚀 Đang khởi động Bot {i}...")
+        else:
+            print(f"⚠️ Bot {i} không có token!")
+
+    # Chạy tất cả bot cùng lúc
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("❌ Vui lòng set DISCORD_TOKEN trong environment variables!")
+    # Kiểm tra token
+    active_tokens = [t for t in TOKENS if t]
+    if not active_tokens:
+        print("❌ Không có token nào! Vui lòng set DISCORD_TOKEN_1, DISCORD_TOKEN_2, DISCORD_TOKEN_3 trong .env")
         exit(1)
-    bot.run(TOKEN)
+    
+    print(f"🚀 Khởi động {len(active_tokens)} bot...")
+    asyncio.run(main())
