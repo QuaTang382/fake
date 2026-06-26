@@ -1,8 +1,20 @@
-import discord
+1import discord
 from discord.ext import commands
 import aiohttp
 import os
+import sys
 from dotenv import load_dotenv
+
+# Fix lỗi audioop bằng cách ghi đè
+try:
+    import audioop
+except ImportError:
+    # Tạo audioop giả để tránh lỗi
+    import builtins
+    class MockAudioop:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+    builtins.__dict__['audioop'] = MockAudioop()
 
 load_dotenv()
 
@@ -92,7 +104,6 @@ async def get_or_create_webhook(channel):
         if wh.name == "FakeBotWebhook":
             return wh
     
-    # Tạo webhook mới
     webhook = await channel.create_webhook(name="FakeBotWebhook")
     return webhook
 
@@ -116,14 +127,10 @@ async def on_message(message):
     if message.author.id == status['user_id']:
         try:
             channel = message.channel
-            
-            # Lấy webhook
             webhook = await get_or_create_webhook(channel)
             
-            # Chuẩn bị nội dung
             content = message.content if message.content else None
             
-            # Xử lý attachments
             files = []
             if message.attachments:
                 for attachment in message.attachments:
@@ -136,12 +143,10 @@ async def on_message(message):
                     except Exception as e:
                         print(f"Lỗi tải attachment: {e}")
             
-            # Xử lý embed nếu có
             embeds = []
             if message.embeds:
                 embeds = message.embeds
             
-            # Gửi tin nhắn fake
             await webhook.send(
                 content=content,
                 username=status['display_name'],
