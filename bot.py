@@ -1,20 +1,20 @@
+import sys
+import types
+
+# Tạo mock audioop TRƯỚC KHI import discord
+class MockAudioop:
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: b''
+
+# Thêm audioop vào sys.modules để discord.py nghĩ nó đã tồn tại
+sys.modules['audioop'] = MockAudioop()
+
+# Bây giờ mới import discord
 import discord
 from discord.ext import commands
 import aiohttp
 import os
-import sys
 from dotenv import load_dotenv
-
-# Fix lỗi audioop bằng cách ghi đè
-try:
-    import audioop
-except ImportError:
-    # Tạo audioop giả để tránh lỗi
-    import builtins
-    class MockAudioop:
-        def __getattr__(self, name):
-            return lambda *args, **kwargs: None
-    builtins.__dict__['audioop'] = MockAudioop()
 
 load_dotenv()
 
