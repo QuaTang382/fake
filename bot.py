@@ -98,14 +98,19 @@ async def stop_fake(interaction: discord.Interaction):
 
 async def get_or_create_webhook(channel):
     """Lấy webhook có sẵn hoặc tạo mới"""
-    webhooks = await channel.webhooks()
-    
-    for wh in webhooks:
-        if wh.name == "FakeBotWebhook":
-            return wh
-    
-    webhook = await channel.create_webhook(name="FakeBotWebhook")
-    return webhook
+    try:
+        webhooks = await channel.webhooks()
+        
+        for wh in webhooks:
+            if wh.name == "FakeBotWebhook":
+                return wh
+        
+        # Tạo webhook mới
+        webhook = await channel.create_webhook(name="FakeBotWebhook")
+        return webhook
+    except Exception as e:
+        print(f"Lỗi tạo webhook: {e}")
+        return None
 
 @bot.event
 async def on_message(message):
@@ -127,10 +132,17 @@ async def on_message(message):
     if message.author.id == status['user_id']:
         try:
             channel = message.channel
-            webhook = await get_or_create_webhook(channel)
             
+            # Lấy webhook
+            webhook = await get_or_create_webhook(channel)
+            if not webhook:
+                await channel.send("⚠️ Không thể tạo webhook! Kiểm tra quyền của bot.")
+                return
+            
+            # Chuẩn bị nội dung
             content = message.content if message.content else None
             
+            # Xử lý attachments
             files = []
             if message.attachments:
                 for attachment in message.attachments:
@@ -143,10 +155,12 @@ async def on_message(message):
                     except Exception as e:
                         print(f"Lỗi tải attachment: {e}")
             
+            # Xử lý embed nếu có
             embeds = []
             if message.embeds:
                 embeds = message.embeds
             
+            # Gửi tin nhắn fake với name và avatar
             await webhook.send(
                 content=content,
                 username=status['display_name'],
@@ -157,6 +171,12 @@ async def on_message(message):
             
         except discord.Forbidden:
             await channel.send("⚠️ Bot không có quyền tạo webhook hoặc gửi tin nhắn!")
+        except discord.HTTPException as e:
+            print(f"Lỗi HTTP: {e}")
+            try:
+                await channel.send(f"⚠️ Lỗi HTTP: {str(e)[:100]}")
+            except:
+                pass
         except Exception as e:
             print(f"Lỗi khi gửi tin nhắn fake: {e}")
             try:
