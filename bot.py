@@ -18,12 +18,22 @@ from discord.ext import commands
 
 load_dotenv()
 
-# Lấy token từ env
-TOKENS = [
-    os.getenv('DISCORD_TOKEN_1'),
-    os.getenv('DISCORD_TOKEN_2'),
-    os.getenv('DISCORD_TOKEN_3')
-]
+# Lấy tất cả token từ env (DISCORD_TOKEN_1, DISCORD_TOKEN_2, ...)
+TOKENS = []
+i = 1
+while True:
+    token = os.getenv(f'DISCORD_TOKEN_{i}')
+    if token:
+        TOKENS.append(token)
+        i += 1
+    else:
+        break
+
+# Nếu không có token nào, thử lấy DISCORD_TOKEN cũ
+if not TOKENS:
+    old_token = os.getenv('DISCORD_TOKEN')
+    if old_token:
+        TOKENS.append(old_token)
 
 ADMIN_ID = 1512658477841908015
 
@@ -439,10 +449,9 @@ async def main():
 
 if __name__ == "__main__":
     # Kiểm tra token
-    active_tokens = [t for t in TOKENS if t]
-    if not active_tokens:
-        print("❌ Không có token nào! Vui lòng set DISCORD_TOKEN_1, DISCORD_TOKEN_2, DISCORD_TOKEN_3 trong .env")
+    if not TOKENS:
+        print("❌ Không có token nào! Vui lòng set DISCORD_TOKEN_1, DISCORD_TOKEN_2, ... trong .env")
         exit(1)
     
-    print(f"🚀 Khởi động {len(active_tokens)} bot...")
+    print(f"🚀 Khởi động {len(TOKENS)} bot...")
     asyncio.run(main())
